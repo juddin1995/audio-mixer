@@ -36,49 +36,34 @@ export default function AudioMixerApp() {
 
   async function startRecording() {
     if (!originalFile) return;
-    try {
-      setIsRecording(true);
-      // get microphone
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaStreamRef.current = stream;
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      const chunks = [];
+    setIsRecording(true);
+    // get microphone
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaStreamRef.current = stream;
+    const mediaRecorder = new MediaRecorder(stream);
+    mediaRecorderRef.current = mediaRecorder;
+    const chunks = [];
+    mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(chunks, { type: "audio/webm" });
+      setMicBlob(blob);
+    };
+    mediaRecorder.start();
 
-      mediaRecorder.ondataavailable = (e) => {
-        console.log("Data available:", e.data.size, "bytes");
-        chunks.push(e.data);
-      };
-
-      mediaRecorder.onstop = () => {
-        console.log("Recording stopped, total chunks:", chunks.length);
-        const blob = new Blob(chunks, { type: "audio/webm" });
-        console.log("Mic blob size:", blob.size, "bytes");
-        setMicBlob(blob);
-        setIsRecording(false);
-      };
-
-      // Start recording with timeslice to ensure data events fire
-      mediaRecorder.start(100); // Request data every 100ms
-
-      // play the original audio from start (or current position)
-      if (audioRef.current) {
-        audioRef.current.currentTime = 0;
-        try {
-          await audioRef.current.play();
-        } catch (e) {
-          /* autoplay policies */
-        }
-        setIsPlaying(true);
+    // play the original audio from start (or current position)
+    if (audioRef.current) {
+      audioRef.current.currentTime = 0;
+      try {
+        await audioRef.current.play();
+      } catch (e) {
+        /* autoplay policies */
       }
-    } catch (err) {
-      console.error("Failed to start recording:", err);
-      alert("Microphone access denied or unavailable: " + err.message);
-      setIsRecording(false);
+      setIsPlaying(true);
     }
   }
 
   function stopRecording() {
+    setIsRecording(false);
     if (
       mediaRecorderRef.current &&
       mediaRecorderRef.current.state !== "inactive"
@@ -97,72 +82,46 @@ export default function AudioMixerApp() {
 
   async function mixAndExport() {
     if (!originalFile || !micBlob) return;
-    try {
-      // decode both into AudioBuffer
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const sampleRate = audioCtx.sampleRate;
+    // decode both into AudioBuffer
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const sampleRate = audioCtx.sampleRate;
 
-      const origArrayBuffer = await originalFile.arrayBuffer();
-      const origBuffer = await audioCtx.decodeAudioData(
-        origArrayBuffer.slice(0)
-      );
-      console.log(
-        "Original decoded:",
-        origBuffer.numberOfChannels,
-        "ch,",
-        origBuffer.length,
-        "samples"
-      );
+    const origArrayBuffer = await originalFile.arrayBuffer();
+    const origBuffer = await audioCtx.decodeAudioData(origArrayBuffer.slice(0));
 
-      const micArrayBuffer = await micBlob.arrayBuffer();
-      const micBuffer = await audioCtx.decodeAudioData(micArrayBuffer.slice(0));
-      console.log(
-        "Mic decoded:",
-        micBuffer.numberOfChannels,
-        "ch,",
-        micBuffer.length,
-        "samples"
-      );
+    const micArrayBuffer = await micBlob.arrayBuffer();
+    const micBuffer = await audioCtx.decodeAudioData(micArrayBuffer.slice(0));
 
-      // Use 2 channels (stereo) for output, max length
-      const length = Math.max(origBuffer.length, micBuffer.length);
-      const offlineCtx = new OfflineAudioContext(2, length, sampleRate);
+    const length = Math.max(origBuffer.length, micBuffer.length);
+    const offlineCtx = new OfflineAudioContext(
+      origBuffer.numberOfChannels,
+      length,
+      sampleRate
+    );
 
-      // original source
-      const origSource = offlineCtx.createBufferSource();
-      origSource.buffer = origBuffer;
-      const origGain = offlineCtx.createGain();
-      origGain.gain.value = 1.0;
-      origSource.connect(origGain).connect(offlineCtx.destination);
+    // original source
+    const origSource = offlineCtx.createBufferSource();
+    origSource.buffer = origBuffer;
+    const origGain = offlineCtx.createGain();
+    origGain.gain.value = 1.0; // allow UI later
+    origSource.connect(origGain).connect(offlineCtx.destination);
 
-      // mic source
-      const micSource = offlineCtx.createBufferSource();
-      micSource.buffer = micBuffer;
-      const micGain = offlineCtx.createGain();
-      micGain.gain.value = 1.0;
-      micSource.connect(micGain).connect(offlineCtx.destination);
+    // mic source
+    const micSource = offlineCtx.createBufferSource();
+    micSource.buffer = micBuffer;
+    const micGain = offlineCtx.createGain();
+    micGain.gain.value = 1.0;
+    micSource.connect(micGain).connect(offlineCtx.destination);
 
-      origSource.start(0);
-      micSource.start(0);
+    origSource.start(0);
+    micSource.start(0);
 
-      const rendered = await offlineCtx.startRendering();
-      console.log(
-        "Rendered:",
-        rendered.numberOfChannels,
-        "ch,",
-        rendered.length,
-        "samples"
-      );
+    const rendered = await offlineCtx.startRendering();
 
-      const wavBlob = bufferToWavBlob(rendered);
-      console.log("WAV blob size:", wavBlob.size, "bytes");
-      setMixedBlob(wavBlob);
-      // cleanup
-      audioCtx.close();
-    } catch (err) {
-      console.error("Mixing failed:", err);
-      alert("Mixing failed: " + err.message);
-    }
+    const wavBlob = bufferToWavBlob(rendered);
+    setMixedBlob(wavBlob);
+    // cleanup
+    audioCtx.close();
   }
 
   function bufferToWavBlob(buffer) {
@@ -171,73 +130,64 @@ export default function AudioMixerApp() {
     const format = 1; // PCM
     const bitDepth = 16;
 
-    // Get channel data and interleave properly
-    let pcmData;
-    if (numChannels === 1) {
-      // Mono: use as-is
-      pcmData = buffer.getChannelData(0);
-    } else if (numChannels === 2) {
-      // Stereo: interleave left and right
+    let interleaved;
+    if (numChannels === 2) {
       const left = buffer.getChannelData(0);
       const right = buffer.getChannelData(1);
-      pcmData = interleave(left, right);
+      interleaved = interleave(left, right);
     } else {
-      // Multi-channel: mix down to stereo
-      const left = buffer.getChannelData(0);
-      const right = numChannels > 1 ? buffer.getChannelData(1) : left;
-      pcmData = interleave(left, right);
+      interleaved = buffer.getChannelData(0);
     }
 
-    // Calculate sizes
-    const bytesPerSample = bitDepth / 8; // 2 for 16-bit
-    const dataSize = pcmData.length * bytesPerSample; // total PCM bytes
-    const fileSize = 36 + dataSize; // file size (after first 8 bytes)
-    const blockAlign = numChannels * bytesPerSample;
-    const byteRate = sampleRate * blockAlign;
-
-    // Create the WAV file buffer
-    const arrayBuffer = new ArrayBuffer(44 + dataSize);
+    const bufferLength = interleaved.length * (bitDepth / 8) + 44;
+    const arrayBuffer = new ArrayBuffer(bufferLength);
     const view = new DataView(arrayBuffer);
 
-    // Write WAV header
-    writeString(view, 0, "RIFF");
-    view.setUint32(4, fileSize, true);
-    writeString(view, 8, "WAVE");
+    /* RIFF identifier */ writeString(view, 0, "RIFF");
+    /* file length */ view.setUint32(4, 36 + interleaved.length * 2, true);
+    /* RIFF type */ writeString(view, 8, "WAVE");
+    /* format chunk identifier */ writeString(view, 12, "fmt ");
+    /* format chunk length */ view.setUint32(16, 16, true);
+    /* sample format (raw) */ view.setUint16(20, format, true);
+    /* channel count */ view.setUint16(22, numChannels, true);
+    /* sample rate */ view.setUint32(24, sampleRate, true);
+    /* byte rate (sampleRate * blockAlign) */ view.setUint32(
+      28,
+      sampleRate * numChannels * (bitDepth / 8),
+      true
+    );
+    /* block align (channel count * bytes per sample) */ view.setUint16(
+      32,
+      numChannels * (bitDepth / 8),
+      true
+    );
+    /* bits per sample */ view.setUint16(34, bitDepth, true);
+    /* data chunk identifier */ writeString(view, 36, "data");
+    /* data chunk length */ view.setUint32(
+      40,
+      interleaved.length * (bitDepth / 8),
+      true
+    );
 
-    // fmt subchunk
-    writeString(view, 12, "fmt ");
-    view.setUint32(16, 16, true); // subchunk1size
-    view.setUint16(20, format, true); // audio format (1 = PCM)
-    view.setUint16(22, numChannels, true); // num channels
-    view.setUint32(24, sampleRate, true); // sample rate
-    view.setUint32(28, byteRate, true); // byte rate
-    view.setUint16(32, blockAlign, true); // block align
-    view.setUint16(34, bitDepth, true); // bits per sample
-
-    // data subchunk
-    writeString(view, 36, "data");
-    view.setUint32(40, dataSize, true);
-
-    // Write PCM samples
+    // write the PCM samples
     let offset = 44;
-    for (let i = 0; i < pcmData.length; i++) {
-      const s = Math.max(-1, Math.min(1, pcmData[i]));
-      const sample = s < 0 ? s * 0x8000 : s * 0x7fff;
-      view.setInt16(offset, sample, true);
-      offset += 2;
+    for (let i = 0; i < interleaved.length; i++, offset += 2) {
+      const s = Math.max(-1, Math.min(1, interleaved[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
     }
 
     return new Blob([view], { type: "audio/wav" });
   }
 
   function interleave(left, right) {
-    // Interleave two mono channels into stereo (L, R, L, R, ...)
-    const length = Math.min(left.length, right.length);
-    const result = new Float32Array(length * 2);
-    let resultIndex = 0;
-    for (let i = 0; i < length; i++) {
-      result[resultIndex++] = left[i];
-      result[resultIndex++] = right[i];
+    const length = left.length + right.length;
+    const result = new Float32Array(length);
+    let index = 0;
+    let inputIndex = 0;
+    while (index < length) {
+      result[index++] = left[inputIndex];
+      result[index++] = right[inputIndex];
+      inputIndex++;
     }
     return result;
   }
