@@ -1,38 +1,37 @@
 const express = require("express");
-const router = express.Router();
 const multer = require("multer");
 const path = require("path");
-const audioCtrl = require("../controllers/audio");
-const ensureLoggedIn = require("../middleware/ensureLoggedIn");
+const { mixAudio } = require("../controllers/audioController");
 
-// Configure multer storage
+const router = express.Router();
+
+// Configure multer with better file handling
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, path.join(__dirname, "..", "uploads"));
+    cb(null, path.join(__dirname, "../uploads/"));
   },
   filename: function (req, file, cb) {
-    const ext = path.extname(file.originalname);
-    const name = `${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 8)}${ext}`;
-    cb(null, name);
-  },
+    // Preserve original extension if available
+    const ext = path.extname(file.originalname) || '';
+    cb(null, `${Date.now()}-${Math.random().toString(36).substring(7)}${ext}`);
+  }
 });
-const upload = multer({ storage });
 
-// Upload original audio (no auth required in this example, adjust as needed)
-router.post(
-  "/upload-original",
-  upload.single("file"),
-  audioCtrl.uploadOriginal
-);
+const upload = multer({ 
+  storage: storage,
+  limits: {
+    fileSize: 100 * 1024 * 1024 // 100MB limit
+  }
+});
 
-// Upload mixed/ad-libbed audio (require logged in user)
 router.post(
-  "/upload-mixed",
-  ensureLoggedIn,
-  upload.single("file"),
-  audioCtrl.uploadMixed
+  "/mix",
+  upload.fields([
+    { name: "original", maxCount: 1 },
+    { name: "mic", maxCount: 1 },
+  ]),
+  mixAudio
 );
 
 module.exports = router;
+
