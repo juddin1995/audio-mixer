@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Mic, Square, Download, Trash2, Volume2, Music } from 'lucide-react';
+import { Upload, Mic, Square, Download, Trash2, Volume2, Music, Headphones } from 'lucide-react';
 
 export default function AudioMixer() {
   const [uploadedFile, setUploadedFile] = useState(null);
@@ -12,6 +12,11 @@ export default function AudioMixer() {
   const [recordingTime, setRecordingTime] = useState(0);
   const [uploadVolume, setUploadVolume] = useState(1);
   const [recordVolume, setRecordVolume] = useState(1);
+  const [isTrackPlaying, setIsTrackPlaying] = useState(false);
+  const [trackPlaybackError, setTrackPlaybackError] = useState(null);
+  const [trackProgress, setTrackProgress] = useState(0);
+  const [trackDuration, setTrackDuration] = useState(0);
+  const [trackCurrentTime, setTrackCurrentTime] = useState(0);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -29,6 +34,61 @@ export default function AudioMixer() {
     };
   }, [uploadedAudioUrl, recordedAudioUrl, mixedAudioUrl]);
 
+  useEffect(() => {
+    const audio = uploadedAudioRef.current;
+    if (!audio) return undefined;
+
+    const handlePlay = () => {
+      setIsTrackPlaying(true);
+      setTrackPlaybackError(null);
+    };
+    const handlePause = () => {
+      setIsTrackPlaying(false);
+    };
+    const handleEnded = () => {
+      setIsTrackPlaying(false);
+      setTrackCurrentTime(0);
+      setTrackProgress(0);
+      if (isRecording) {
+        console.warn('Backing track ended during recording. Restarting...');
+        attemptTrackPlayback({ reset: true });
+      }
+    };
+    const handleTimeUpdate = () => {
+      if (audio.duration && Number.isFinite(audio.duration)) {
+        setTrackDuration(audio.duration);
+        setTrackCurrentTime(audio.currentTime || 0);
+        setTrackProgress(audio.currentTime / audio.duration);
+      } else {
+        setTrackProgress(0);
+        setTrackCurrentTime(audio.currentTime || 0);
+      }
+    };
+    const handleLoadedMetadata = () => {
+      setTrackDuration(audio.duration || 0);
+    };
+
+    audio.addEventListener('play', handlePlay);
+    audio.addEventListener('pause', handlePause);
+    audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('timeupdate', handleTimeUpdate);
+    audio.addEventListener('loadedmetadata', handleLoadedMetadata);
+
+    return () => {
+      audio.removeEventListener('play', handlePlay);
+      audio.removeEventListener('pause', handlePause);
+      audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('timeupdate', handleTimeUpdate);
+      audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+    };
+  }, [uploadedAudioUrl, isRecording]);
+
+  useEffect(() => {
+    if (uploadedAudioRef.current) {
+      uploadedAudioRef.current.volume = uploadVolume;
+    }
+  }, [uploadVolume, uploadedAudioUrl]);
+
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (file && file.type.startsWith('audio/')) {
@@ -36,13 +96,63 @@ export default function AudioMixer() {
       const url = URL.createObjectURL(file);
       setUploadedAudioUrl(url);
       setMixedAudioUrl(null);
+      setTrackPlaybackError(null);
+      setTrackProgress(0);
+      setTrackDuration(0);
+      setTrackCurrentTime(0);
     } else {
       alert('Please upload a valid audio file');
     }
   };
 
-  const startRecording = async () => {
+  const attemptTrackPlayback = async ({ reset = false } = {}) => {
+    const audio = uploadedAudioRef.current;
+    if (!audio) return false;
+    if (reset) {
+      audio.currentTime = 0;
+    }
+
     try {
+      await audio.play();
+      return true;
+    } catch (error) {
+      console.error('Error playing track:', error);
+      setTrackPlaybackError(
+        'Autoplay was blocked. Click "Play Track" to start the backing track.'
+      );
+      setIsTrackPlaying(false);
+      return false;
+    }
+  };
+
+  const stopBackingTrack = ({ reset = false } = {}) => {
+    const audio = uploadedAudioRef.current;
+    if (!audio) return;
+    audio.pause();
+    if (reset) {
+      audio.currentTime = 0;
+    }
+    setIsTrackPlaying(false);
+  };
+
+  const startRecording = async () => {
+    if (!uploadedFile || !uploadedAudioUrl) {
+      alert('Please upload a backing track before recording.');
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      alert('Your browser does not support microphone recording.');
+      return;
+    }
+
+    if (!window.MediaRecorder) {
+      alert('Your browser does not support audio recording. Try Chrome or Edge.');
+      return;
+    }
+
+    try {
+      setTrackPlaybackError(null);
       console.log('Requesting microphone access...');
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
@@ -173,8 +283,13 @@ export default function AudioMixer() {
       // Store the resolve function for cleanup
       mediaRecorderRef.current._stopResolve = stopResolve;
 
+      if (uploadedAudioRef.current) {
+        uploadedAudioRef.current.loop = true;
+      }
+
       // Start recording with timeslice to get regular data chunks
       console.log('Starting MediaRecorder...');
+      await attemptTrackPlayback({ reset: true });
       mediaRecorderRef.current.start(100); // Request data every 100ms
       
       console.log('MediaRecorder started. State:', mediaRecorderRef.current.state);
@@ -224,6 +339,11 @@ export default function AudioMixer() {
     console.log('Current chunks before stop:', audioChunksRef.current.length);
 
     try {
+      if (uploadedAudioRef.current) {
+        uploadedAudioRef.current.loop = false;
+      }
+      stopBackingTrack({ reset: true });
+
       // Check if recorder is in recording state
       if (mediaRecorderRef.current.state === 'recording') {
         // Request final data chunk - this is important!
@@ -624,6 +744,8 @@ export default function AudioMixer() {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
     }
+
+    stopBackingTrack({ reset: true });
     
     // Stop stream tracks
     if (streamRef.current) {
@@ -646,6 +768,11 @@ export default function AudioMixer() {
     setIsRecording(false);
     setUploadVolume(1);
     setRecordVolume(1);
+    setIsTrackPlaying(false);
+    setTrackPlaybackError(null);
+    setTrackProgress(0);
+    setTrackDuration(0);
+    setTrackCurrentTime(0);
     audioChunksRef.current = [];
   };
 
@@ -666,6 +793,15 @@ export default function AudioMixer() {
             <p className="text-gray-600">
               Upload a track, record your voice, and mix them together
             </p>
+            <div className="mt-4 bg-purple-50 border border-purple-200 rounded-lg p-4 text-left">
+              <p className="font-semibold text-gray-800 mb-2">Quick steps</p>
+              <p className="text-sm text-gray-700">1) Upload a backing track.</p>
+              <p className="text-sm text-gray-700">2) Record your ad-libs while the track plays.</p>
+              <p className="text-sm text-gray-700">3) Mix the files and download your result.</p>
+              <p className="text-sm text-purple-700 mt-2 font-medium">
+                Record using headphones for best results.
+              </p>
+            </div>
           </div>
 
           <div className="space-y-6">
@@ -675,6 +811,9 @@ export default function AudioMixer() {
                 <Music className="w-5 h-5" />
                 Step 1: Upload Background Track
               </h2>
+              <p className="text-sm text-gray-600 mb-3">
+                Choose an audio file (MP3, WAV, M4A, or OGG). This track will play while you record.
+              </p>
               <input
                 type="file"
                 accept="audio/*"
@@ -685,6 +824,26 @@ export default function AudioMixer() {
                 <div className="mt-4">
                   <p className="text-sm text-gray-600 mb-2 font-medium">✓ {uploadedFile.name}</p>
                   <audio ref={uploadedAudioRef} src={uploadedAudioUrl} controls className="w-full mb-3" />
+                  <div className="flex items-center gap-3 mb-3">
+                    <span
+                      className={`text-xs font-semibold px-2 py-1 rounded-full ${
+                        isTrackPlaying ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-700'
+                      }`}
+                    >
+                      {isTrackPlaying ? 'Track Playing' : 'Track Paused'}
+                    </span>
+                    <div className="flex-1">
+                      <div className="h-2 bg-purple-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-2 bg-purple-500"
+                          style={{ width: `${Math.min(trackProgress * 100, 100)}%` }}
+                        />
+                      </div>
+                      <div className="text-xs text-gray-600 mt-1">
+                        {formatTime(Math.floor(trackCurrentTime))} / {trackDuration ? formatTime(Math.floor(trackDuration)) : '0:00'}
+                      </div>
+                    </div>
+                  </div>
                   <div className="mt-3">
                     <label className="text-sm text-gray-700 font-medium flex items-center gap-2 mb-1">
                       <Volume2 className="w-4 h-4" />
@@ -710,6 +869,10 @@ export default function AudioMixer() {
                 <Mic className="w-5 h-5" />
                 Step 2: Record Your Audio
               </h2>
+              <p className="text-sm text-gray-600 mb-4 flex items-center gap-2">
+                <Headphones className="w-4 h-4" />
+                Use headphones to prevent the backing track from bleeding into your recording.
+              </p>
               <div className="flex items-center gap-4 mb-4">
                 {!isRecording ? (
                   <button
@@ -737,6 +900,18 @@ export default function AudioMixer() {
                   </div>
                 )}
               </div>
+              {trackPlaybackError && (
+                <div className="mb-4 rounded-lg border border-yellow-200 bg-yellow-50 p-3 text-sm text-yellow-800">
+                  <p className="font-medium">{trackPlaybackError}</p>
+                  <button
+                    onClick={() => attemptTrackPlayback({ reset: false })}
+                    className="mt-2 inline-flex items-center gap-2 rounded-full bg-yellow-600 px-4 py-1 text-white hover:bg-yellow-700"
+                  >
+                    <Music className="w-4 h-4" />
+                    Play Track
+                  </button>
+                </div>
+              )}
               {recordedAudioUrl && (
                 <div className="mt-4">
                   <p className="text-sm text-gray-600 mb-2 font-medium">✓ Recording complete!</p>
@@ -765,6 +940,9 @@ export default function AudioMixer() {
               <h2 className="text-xl font-semibold text-gray-800 mb-4">
                 Step 3: Mix & Play
               </h2>
+              <p className="text-sm text-gray-600 mb-4">
+                Click mix to create the final file, then play it back or download it.
+              </p>
               <button
                 onClick={mixAudioFiles}
                 disabled={!uploadedFile || !recordedBlob || isMixing}
